@@ -10,13 +10,17 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # load config
-with open('config.json', 'r') as f:
-    cfg = json.load(f)
+import os
+import json
 
-TOKEN = cfg.get('TELEGRAM_TOKEN')
-SPREADSHEET_ID = cfg.get('SPREADSHEET_ID')
-CREDENTIALS_FILE = cfg.get('CREDENTIALS_FILE', 'credentials.json')
-ADMIN_IDS = cfg.get('ADMIN_IDS', [])
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
+
+# credentials JSON disimpan dalam ENV, bukan file
+CREDENTIALS_JSON = os.environ["CREDENTIALS_JSON"]
+with open("credentials.json", "w") as f:
+    f.write(CREDENTIALS_JSON)
+CREDENTIALS_FILE = "credentials.json"
 
 # init sheets client
 sheets = SheetsClient(CREDENTIALS_FILE, SPREADSHEET_ID)
