@@ -1,166 +1,174 @@
+# bot.py
 import logging
-import os
 import json
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from sheets import SheetsClient
 
-# Logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+# logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === ENV VARIABLES ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-CREDENTIALS_JSON = os.getenv("CREDENTIALS_JSON")  # JSON string
+# load config
+with open('config.json', 'r') as f:
+    cfg = json.load(f)
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("ERROR: TELEGRAM_TOKEN missing in Railway Variables")
-if not SPREADSHEET_ID:
-    raise ValueError("ERROR: SPREADSHEET_ID missing in Railway Variables")
-if not CREDENTIALS_JSON:
-    raise ValueError("ERROR: CREDENTIALS_JSON missing in Railway Variables")
-
-# convert string -> dict
-creds_dict = json.loads(CREDENTIALS_JSON)
+TOKEN = cfg.get('TELEGRAM_TOKEN')
+SPREADSHEET_ID = cfg.get('SPREADSHEET_ID')
+CREDENTIALS_FILE = cfg.get('CREDENTIALS_FILE', 'credentials.json')
+ADMIN_IDS = cfg.get('ADMIN_IDS', [])
 
 # init sheets client
-sheets = SheetsClient(creds_dict, SPREADSHEET_ID)
+sheets = SheetsClient(CREDENTIALS_FILE, SPREADSHEET_ID)
 
-# === BOT COMMANDS ===
-async def start(update, context):
-    msg = (
-        "Assalamu'alaikum 👋\n\n"
-        "Selamat datang di Bot Posyandu.\n\n"
-        "Gunakan perintah:\n"
-        "`/register <child_id> <PIN>`\n"
-        "`/latest`\n"
-        "`/history [n]`\n"
-        "`/profile`\n"
-        "`/help`\n"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+def start(update, context):
+    user = update.effective_user
+    msg = ("Assalamu'alaikum 👋\n\n"
+           "Selamat datang di Bot Posyandu.\n\n"
+           "Untuk mendaftar/link akun anak ke Telegram Anda, gunakan perintah:\n"
+           "`/register <child_id> <PIN>`\n\n"
+           "Contoh: `/register C12345 987654`\n\n"
+           "Setelah terdaftar, gunakan:\n"
+           "`/latest` - data terakhir\n"
+           "`/history [n]` - n entri terakhir (default semua)\n"
+           "`/profile` - profil anak\n"
+           "`/help` - bantuan\n")
+    context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
 
-async def help_cmd(update, context):
-    msg = (
-        "Daftar perintah:\n"
-        "/start\n/help\n/register\n/latest\n/history\n/profile"
-    )
-    await update.message.reply_text(msg)
+def help_cmd(update, context):
+    msg = ("Daftar perintah:\n"
+           "/start - Mulai\n"
+           "/register <child_id> <PIN> - Daftar anak\n"
+           "/latest - Lihat rekam terakhir\n"
+           "/history [n] - Lihat histori (opsional parameter n)\n"
+           "/profile - Lihat profil anak\n"
+           "/help - Bantuan")
+    context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
-async def register(update, context):
+def register(update, context):
+    chat_id = update.effective_chat.id
     user = update.effective_user
     args = context.args
-
     if len(args) < 2:
-        await update.message.reply_text("Format: /register <child_id> <PIN>")
+        context.bot.send_message(chat_id=chat_id, text="Format: /register <child_id> <PIN>\nContoh: /register C12345 987654")
         return
+    child_id = args[0]
+    pin = args[1]
 
-    child_id, pin = args[0], args[1]
     child = sheets.find_child(child_id)
-
     if not child:
-        await update.message.reply_text(f"Child ID `{child_id}` tidak ditemukan.", parse_mode="Markdown")
+        context.bot.send_message(chat_id=chat_id, text=f"Child ID `{child_id}` tidak ditemukan. Mohon cek kembali.", parse_mode='Markdown')
         return
 
-    if str(child.get("pin", "")).strip() != pin:
-        await update.message.reply_text("PIN tidak cocok.")
+    # cek PIN
+    sheet_pin = str(child.get('pin', '')).strip()
+    if sheet_pin != str(pin).strip():
+        context.bot.send_message(chat_id=chat_id, text="PIN tidak cocok. Mohon cek PIN yang diberikan posyandu.")
         return
 
-    sheets.add_mapping_row_if_not_exists(user.id, child_id)
-    await update.message.reply_text(f"Berhasil terdaftar untuk anak *{child.get('nama')}* (ID: {child_id}).", parse_mode="Markdown")
+    # register mapping
+    try:
+        sheets.add_mapping_row_if_not_exists(user.id, child_id)
+        context.bot.send_message(chat_id=chat_id, text=f"Berhasil terdaftar untuk anak *{child.get('nama')}* (ID: {child_id}).", parse_mode='Markdown')
+    except Exception as e:
+        logger.exception("Error register")
+        context.bot.send_message(chat_id=chat_id, text="Terjadi error saat registrasi. Coba lagi nanti.")
 
 def get_current_child_id_from_mapping(telegram_id):
     mapping = sheets.get_mapping_for_telegram(telegram_id)
-    return mapping.get("child_id") if mapping else None
+    if not mapping:
+        return None
+    return mapping.get('child_id')
 
-async def profile(update, context):
+def profile(update, context):
+    chat_id = update.effective_chat.id
     user = update.effective_user
     child_id = get_current_child_id_from_mapping(user.id)
     if not child_id:
-        await update.message.reply_text("Anda belum terdaftar. Gunakan /register")
+        context.bot.send_message(chat_id=chat_id, text="Anda belum terdaftar. Silakan /register <child_id> <PIN>.")
         return
-
     child = sheets.find_child(child_id)
     if not child:
-        await update.message.reply_text("Profil anak tidak ditemukan.")
+        context.bot.send_message(chat_id=chat_id, text="Profil anak tidak ditemukan di sheet.")
         return
+    # format profile
+    msg = ("Profil Anak:\n"
+           f"Nama: {child.get('nama')}\n"
+           f"Child ID: {child.get('child_id')}\n"
+           f"TTL: {child.get('ttl')}\n"
+           f"Jenis kelamin: {child.get('jenis_kelamin')}\n"
+           f"Orang tua: {child.get('orang_tua')}\n")
+    context.bot.send_message(chat_id=chat_id, text=msg)
 
-    msg = (
-        f"Profil Anak:\n"
-        f"Nama: {child.get('nama')}\n"
-        f"Child ID: {child.get('child_id')}\n"
-        f"TTL: {child.get('ttl')}\n"
-        f"Jenis kelamin: {child.get('jenis_kelamin')}\n"
-        f"Orang tua: {child.get('orang_tua')}\n"
-    )
-    await update.message.reply_text(msg)
-
-async def latest(update, context):
+def latest(update, context):
+    chat_id = update.effective_chat.id
     user = update.effective_user
     child_id = get_current_child_id_from_mapping(user.id)
     if not child_id:
-        await update.message.reply_text("Anda belum terdaftar.")
+        context.bot.send_message(chat_id=chat_id, text="Anda belum terdaftar. Silakan /register <child_id> <PIN>.")
         return
-
     latest_rec = sheets.get_latest(child_id)
     if not latest_rec:
-        await update.message.reply_text("Belum ada data.")
+        context.bot.send_message(chat_id=chat_id, text="Belum ada data perkembangan untuk anak ini.")
         return
+    msg = ("Rekaman Terbaru:\n"
+           f"Tanggal: {latest_rec.get('date')}\n"
+           f"Berat badan (kg): {latest_rec.get('bb')}\n"
+           f"Tinggi (cm): {latest_rec.get('tb')}\n"
+           f"Imunisasi: {latest_rec.get('imunisasi')}\n"
+           f"Keterangan: {latest_rec.get('keterangan')}\n"
+           f"Petugas: {latest_rec.get('petugas')}\n")
+    context.bot.send_message(chat_id=chat_id, text=msg)
 
-    msg = (
-        f"Rekaman Terbaru:\n"
-        f"Tanggal: {latest_rec.get('date')}\n"
-        f"BB: {latest_rec.get('bb')} kg\n"
-        f"TB: {latest_rec.get('tb')} cm\n"
-        f"Imunisasi: {latest_rec.get('imunisasi')}\n"
-        f"Catatan: {latest_rec.get('keterangan')}\n"
-        f"Petugas: {latest_rec.get('petugas')}\n"
-    )
-    await update.message.reply_text(msg)
-
-async def history(update, context):
+def history(update, context):
+    chat_id = update.effective_chat.id
     user = update.effective_user
     args = context.args
-    limit = int(args[0]) if args and args[0].isdigit() else None
-
+    limit = None
+    if args and args[0].isdigit():
+        limit = int(args[0])
     child_id = get_current_child_id_from_mapping(user.id)
     if not child_id:
-        await update.message.reply_text("Anda belum terdaftar.")
+        context.bot.send_message(chat_id=chat_id, text="Anda belum terdaftar. Silakan /register <child_id> <PIN>.")
         return
-
     records = sheets.get_history(child_id)
     if not records:
-        await update.message.reply_text("Belum ada data histori.")
+        context.bot.send_message(chat_id=chat_id, text="Belum ada data histori untuk anak ini.")
         return
-
     if limit:
         records = records[:limit]
+    # build message
+    lines = []
+    for r in records:
+        lines.append(f"{r.get('date')}: BB={r.get('bb')} kg, TB={r.get('tb')} cm, Imun:{r.get('imunisasi')}, Note:{r.get('keterangan')}")
+    msg = "Histori:\n" + "\n".join(lines)
+    context.bot.send_message(chat_id=chat_id, text=msg)
 
-    lines = [f"{r.get('date')}: BB={r.get('bb')}, TB={r.get('tb')}, Imun={r.get('imunisasi')}" for r in records]
-    await update.message.reply_text("Histori:\n" + "\n".join(lines))
+def unknown(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Maaf, perintah tidak dikenal. Ketik /help untuk daftar perintah.")
 
-async def unknown(update, context):
-    await update.message.reply_text("Perintah tidak dikenal.")
+def error(update, context):
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
 
-# === MAIN ===
-async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("register", register))
-    app.add_handler(CommandHandler("profile", profile))
-    app.add_handler(CommandHandler("latest", latest))
-    app.add_handler(CommandHandler("history", history))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    # handlers
+    dp.add_handler(CommandHandler('start', start))
+    dp.add_handler(CommandHandler('help', help_cmd))
+    dp.add_handler(CommandHandler('register', register, pass_args=True))
+    dp.add_handler(CommandHandler('profile', profile))
+    dp.add_handler(CommandHandler('latest', latest))
+    dp.add_handler(CommandHandler('history', history, pass_args=True))
+    dp.add_handler(MessageHandler(Filters.command, unknown))
+    dp.add_error_handler(error)
 
-    logger.info("Bot running...")
-    await app.run_polling()
+    # start polling
+    updater.start_polling()
+    logger.info("Bot started. Listening for messages...")
+    updater.idle()
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+if __name__ == '__main__':
+    main()
 
